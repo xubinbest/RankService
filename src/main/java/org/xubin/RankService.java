@@ -7,8 +7,8 @@ import java.util.concurrent.ConcurrentSkipListMap;
 public class RankService {
     private static volatile RankService instance;
 
-    private ConcurrentSkipListMap<Integer, LinkedHashSet<String>> rankMap;
-    private ConcurrentHashMap<String, Integer> playerScoreMap;
+    private final ConcurrentSkipListMap<Integer, Set<String>> rankMap;
+    private final ConcurrentHashMap<String, Integer> playerScoreMap;
 
     public RankService() {
         rankMap = new ConcurrentSkipListMap<>(Collections.reverseOrder());
@@ -32,25 +32,27 @@ public class RankService {
      * @param score
      */
     public void updateScore(String playerId, int score) {
-        if (playerScoreMap.containsKey(playerId)) {
-            int oldScore = playerScoreMap.get(playerId);
-            // 分数不变不处理
-            if (oldScore == score) {
-                return;
-            }
-            // 删除旧分数集合中的数据
-            Set<String> rankPlayerSet = rankMap.get(oldScore);
-            rankPlayerSet.remove(playerId);
-            if (rankPlayerSet.isEmpty()) {
-                rankMap.remove(oldScore);
-            }
+        if (playerId == null || score < 0) {
+            throw new IllegalArgumentException("Invalid playerId or score");
         }
 
-        // 更新新分数
+        Integer oldScore = playerScoreMap.get(playerId);
+
+        // 如果分数未变化，直接返回
+        if (oldScore != null && oldScore == score) {
+            return;
+        }
+
+        // 如果玩家有旧分数，移除旧分数对应的记录
+        if (oldScore != null) {
+            removePlayerFromRankMap(playerId, oldScore);
+        }
+
+        // 更新玩家分数
         playerScoreMap.put(playerId, score);
-        // 将数据加入到新分数集合中
-        Set<String> playerSet = rankMap.computeIfAbsent(score, k -> new LinkedHashSet<>());
-        playerSet.add(playerId);
+
+        // 添加到新分数对应的集合
+        rankMap.computeIfAbsent(score, k -> Collections.synchronizedSet(new LinkedHashSet<>())).add(playerId);
     }
 
     /**
@@ -59,16 +61,13 @@ public class RankService {
      * @return RankInfo
      */
     public RankInfo getPlayerRank(String playerId) {
-        RankInfo rankInfo = new RankInfo(playerId, 0, -1);
+        String threadName = Thread.currentThread().getName();
         if (!playerScoreMap.containsKey(playerId)) {
-            rankInfo.score = 0;
-            rankInfo.rank = -1;
-            return rankInfo;
+            return new RankInfo(playerId, 0, -1);
         }
         int score = playerScoreMap.get(playerId);
-        rankInfo.score = score;
         int rank = 1;
-        for (Map.Entry<Integer, LinkedHashSet<String>> entry : rankMap.entrySet()) {
+        for (Map.Entry<Integer, Set<String>> entry : rankMap.entrySet()) {
             if(entry.getKey() > score) {
                 rank += entry.getValue().size();
             } else if (entry.getKey() == score) {
@@ -83,8 +82,7 @@ public class RankService {
                 break;
             }
         }
-        rankInfo.rank = rank;
-        return rankInfo;
+        return new RankInfo(playerId, score, rank);
     }
 
     /**
@@ -93,13 +91,12 @@ public class RankService {
      * @return RankInfo
      */
     public RankInfo getPlayerRankExt(String playerId) {
-        RankInfo rankInfo;
         if (!playerScoreMap.containsKey(playerId)) {
             return new RankInfo(playerId, 0, -1);
         }
         int score = playerScoreMap.get(playerId);
         int rank = 1;
-        for (Map.Entry<Integer, LinkedHashSet<String>> entry : rankMap.entrySet()) {
+        for (Map.Entry<Integer, Set<String>> entry : rankMap.entrySet()) {
             if(entry.getKey() > score) {
                 rank++;
             } else {
@@ -116,8 +113,11 @@ public class RankService {
      */
     public List<RankInfo> getTopN(int n) {
         List<RankInfo> topN = new ArrayList<>();
+        if(n <= 0) {
+            return topN;
+        }
         int count = 0;
-        for (Map.Entry<Integer, LinkedHashSet<String>> entry : rankMap.entrySet()) {
+        for (Map.Entry<Integer, Set<String>> entry : rankMap.entrySet()) {
             for (String playerId : entry.getValue()) {
                 RankInfo rankInfo = new RankInfo(playerId, entry.getKey(), ++count);
                 topN.add(rankInfo);
@@ -142,93 +142,52 @@ public class RankService {
             return rankRange;
         }
 
-        int score = playerScoreMap.get(playerId);
-        int rank = 1;
+        // 获取玩家当前分数和排名
+        RankInfo selfRankInfo = getPlayerRank(playerId);
+        int selfRank = selfRankInfo.rank;
 
-        LinkedList<String> prevList = new LinkedList<>();
-        LinkedList<String> nextList = new LinkedList<>();
+        // 计算目标排名范围
+        int startRank = Math.max(1, selfRank - range);
+        int endRank = selfRank + range;
 
-        boolean find = false;
-        int selfRank = 0;
+        // 快速跳转到目标范围
+        int currentRank = 1;
+        for (Map.Entry<Integer, Set<String>> entry : rankMap.entrySet()) {
+            int score = entry.getKey();
+            Set<String> players = entry.getValue();
 
-        for (Map.Entry<Integer, LinkedHashSet<String>> entry : rankMap.entrySet()) {
-            if (entry.getKey() > score) {
-                rank += entry.getValue().size();
-            } else if (entry.getKey() == score) {
-                for (String k : entry.getValue()) {
-                    if (k.equals(playerId)) {
-                        find = true;
-                        selfRank = ++rank;
-                    } else {
-                        rank++;
-                        if (find) {
-                            nextList.add(k);
-                            if (nextList.size() >= range) {
-                                break;
-                            }
-                        } else {
-                            prevList.add(k);
-                            if (prevList.size() > range) {
-                                prevList.remove(0);
-                            }
-                        }
-                    }
-                }
-            } else {
-                for (String k : entry.getValue()) {
-                    nextList.add(k);
-                    if (nextList.size() >= range) {
-                        break;
-                    }
-                }
-            }
-            if (nextList.size() >= range) {
+            // 如果当前排名超出范围，停止遍历
+            if (currentRank > endRank) {
                 break;
             }
-        }
 
-        if (prevList.size() < range) {
-            Integer prevKey = rankMap.lowerKey(score);
-            if (prevKey != null) {
-                prevList = findPrevPlayer(prevKey, range - prevList.size(), prevList);
+            if(currentRank + players.size() < startRank) {
+                currentRank += players.size();
+                continue;
             }
-        }
 
-        for (int i = 0; i < prevList.size(); i++) {
-            RankInfo rankInfo = new RankInfo(prevList.get(i), playerScoreMap.get(prevList.get(i)), selfRank - prevList.size() + i);
-            rankRange.add(rankInfo);
-        }
 
-        RankInfo selfRankInfo = new RankInfo(playerId, score, selfRank);
-        rankRange.add(selfRankInfo);
+            // 遍历当前分数段的玩家
+            for (String id : players) {
+                if (currentRank >= startRank && currentRank <= endRank) {
+                    rankRange.add(new RankInfo(id, score, currentRank));
+                }
+                currentRank++;
 
-        for (int i = 0; i < nextList.size(); i++) {
-            RankInfo rankInfo = new RankInfo(nextList.get(i), playerScoreMap.get(nextList.get(i)), selfRank + i + 1);
-            rankRange.add(rankInfo);
+                // 如果达到目标范围的结束排名，停止遍历
+                if (currentRank > endRank) {
+                    break;
+                }
+            }
         }
 
         return rankRange;
     }
 
-    private LinkedList<String> findPrevPlayer(int score, int count, LinkedList<String> list) {
-        LinkedHashSet<String> playerSet = rankMap.get(score);
-        if (playerSet.size() < count) {
-            LinkedList<String> setList = new LinkedList<>(playerSet);
-            setList.addAll(list);
-            list = setList;
-            Integer prevKey = rankMap.lowerKey(score);
-            if (prevKey != null) {
-                list = findPrevPlayer(prevKey, count - playerSet.size(), list);
-            }
-        } else {
-            List<String> setList = new LinkedList<>(playerSet);
-            for (int i = setList.size() - 1; i >= 0; i--) {
-                list.addFirst(setList.get(i));
-                if (list.size() >= count) {
-                    break;
-                }
-            }
-        }
-        return list;
+    private void removePlayerFromRankMap(String playerId, int score) {
+        rankMap.computeIfPresent(score, (key, set) -> {
+            set.remove(playerId);
+            return set.isEmpty() ? null : set;
+        });
     }
 }

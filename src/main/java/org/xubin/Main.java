@@ -2,6 +2,7 @@ package org.xubin;
 
 import java.util.LinkedList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 
 public class Main {
 
@@ -11,6 +12,7 @@ public class Main {
     public static void main(String[] args) throws InterruptedException {
         test();
 //        test1();
+//        test2();
     }
 
     // 功能测试
@@ -77,7 +79,6 @@ public class Main {
         Thread.sleep(1000);
         // 随机查看排名
         randomShowRank(10);
-        LinkedList<String> list = new LinkedList<>();
 
         Thread.sleep(1000);
         // 查看TopN
@@ -86,7 +87,61 @@ public class Main {
         Thread.sleep(1000);
         // 随机查看玩家排名范围
         randomShowPlayerRange(2);
+
     }
+
+    // 并发测试
+    private static void test2() throws InterruptedException {
+        // 初始化数据
+        initTestData();
+
+        Thread.sleep(1000);
+
+        CountDownLatch updateLatch = new CountDownLatch(10);
+        CountDownLatch showLatch = new CountDownLatch(5);
+
+        asyncRandomShowRank(5, showLatch);
+        asyncRandomUpdateScore(10, updateLatch);
+
+        updateLatch.await();
+        showLatch.await();
+    }
+
+    private static void asyncRandomUpdateScore(int count, CountDownLatch latch) throws InterruptedException {
+        System.out.println("asyncRandomUpdateScore start");
+
+        for (int i = 0; i < count; i++) {
+            Thread t = new Thread(() -> {
+                try {
+                    int playerId = (int)(Math.random() * 100000) % 100000 + 1;
+                    updateScore(String.valueOf(playerId));
+                } finally {
+                    latch.countDown();
+                }
+            });
+            t.start();
+        }
+        System.out.println("asyncRandomUpdateScore end");
+    }
+
+    private static void asyncRandomShowRank(int showCount, CountDownLatch latch) throws InterruptedException {
+        System.out.println("asyncRandomShowRank start");
+        for (int i = 0; i < showCount; i++) {
+            Thread t = new Thread(() -> {
+                try {
+                    int playerId = (int)(Math.random() * 1000000) % PLAYER_COUNT + 1;
+                    String playerIdStr = String.valueOf(playerId);
+                    showRank(playerIdStr);
+                } finally {
+                    latch.countDown();
+                }
+            });
+            t.start();
+        }
+        System.out.println("asyncRandomShowRank end");
+    }
+
+
 
     private static void initTestData() {
         long start = System.currentTimeMillis();
@@ -114,6 +169,13 @@ public class Main {
         System.out.println("randomShowRank cost: " + (end - start) + "ms \n");
     }
 
+    private static void showRank(String playerId) {
+        long start = System.currentTimeMillis();
+        RankService.instance().getPlayerRank(playerId);
+        long end = System.currentTimeMillis();
+        System.out.println(playerId + " showRank cost: " + (end - start) + "ms \n");
+    }
+
     private static void showTopN(int n) {
         long start = System.currentTimeMillis();
         List<RankInfo> topN = RankService.instance().getTopN(n);
@@ -137,10 +199,19 @@ public class Main {
         System.out.println("randomUpdateScore cost: " + (end - start) + "ms \n");
     }
 
+    private static void updateScore(String playerId) {
+        int score = (int)(Math.random() * 100000);
+        long start = System.currentTimeMillis();
+        RankService.instance().updateScore(playerId, score);
+        long end = System.currentTimeMillis();
+        System.out.println(playerId + " updateScore cost: " + (end - start) + "ms \n");
+    }
+
     private static void randomShowPlayerRange(int n) {
         int playerId = (int)(Math.random() * 100000) % 100000 + 1;
+        String playerIdStr = String.valueOf(playerId);
         long start = System.currentTimeMillis();
-        List<RankInfo> rangeList = RankService.instance().getPlayerRankRange(String.valueOf(playerId), n);
+        List<RankInfo> rangeList = RankService.instance().getPlayerRankRange(playerIdStr, n);
         long end = System.currentTimeMillis();
         System.out.println("player: " + playerId +  " RangeList:");
         for (RankInfo rankInfo : rangeList) {
